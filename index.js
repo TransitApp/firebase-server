@@ -16,6 +16,7 @@ var TokenValidator = require('./lib/token-validator');
 var Promise = require('any-promise');
 var firebase = require('firebase');
 var _log = require('debug')('firebase-server');
+const EventEmitter = require('events');
 
 // In order to produce new Firebase clients that do not conflict with existing
 // instances of the Firebase client, each one must have a unique name.
@@ -50,50 +51,53 @@ function normalizePath(fullPath) {
 	};
 }
 
-function FirebaseServer(port, name, data) {
-	this.name = name || 'mock.firebase.server';
+class FirebaseServer extends EventEmitter {
+	constructor(port, name, data) {
+		super();
+		this.name = name || 'mock.firebase.server';
+		this.port = port;
+		this.data = data;
 
-	// Firebase is more than just a "database" now; the "realtime database" is
-	// just one of many services provided by a Firebase "App" container.
-	// The Firebase library must be initialized with an App, and that app
-	// must have a name - either a name you choose, or '[DEFAULT]' which
-	// the library will substitute for you if you do not provide one.
-	// An important aspect of App names is that multiple instances of the
-	// Firebase client with the same name will share a local cache instead of
-	// talking "through" our server. So to prevent that from happening, we are
-	// choosing a probably-unique name that a developer would not choose for
-	// their "real" Firebase client instances.
-	var appName = 'firebase-server-internal-' + this.name + '-' + serverID++;
+		// Firebase is more than just a "database" now; the "realtime database" is
+		// just one of many services provided by a Firebase "App" container.
+		// The Firebase library must be initialized with an App, and that app
+		// must have a name - either a name you choose, or '[DEFAULT]' which
+		// the library will substitute for you if you do not provide one.
+		// An important aspect of App names is that multiple instances of the
+		// Firebase client with the same name will share a local cache instead of
+		// talking "through" our server. So to prevent that from happening, we are
+		// choosing a probably-unique name that a developer would not choose for
+		// their "real" Firebase client instances.
+		var appName = 'firebase-server-internal-' + this.name + '-' + serverID++;
 
-	// We must pass a "valid looking" configuration to initializeApp for its
-	// internal checks to pass.
-	var config = {
-		databaseURL: 'ws://fakeserver.firebaseio.test',
-		serviceAccount: {
-			'private_key': 'fake',
-			'client_email': 'fake'
-		}
-	};
-	this.app = firebase.initializeApp(config, appName);
-	this.app.database().goOffline();
+		// We must pass a "valid looking" configuration to initializeApp for its
+		// internal checks to pass.
+		var config = {
+			databaseURL: 'ws://fakeserver.firebaseio.test',
+			serviceAccount: {
+				'private_key': 'fake',
+				'client_email': 'fake'
+			}
+		};
+		this.app = firebase.initializeApp(config, appName);
+		this.app.database().goOffline();
 
-	this.baseRef = this.app.database().ref();
+		this.baseRef = this.app.database().ref();
 
-	this.baseRef.set(data || null);
+		this.baseRef.set(data || null);
 
-	this._wss = new WebSocketServer({
-		port: port
-	});
+		this._wss = new WebSocketServer({
+			port: port
+		});
 
-	this._clock = new TestableClock();
-	this._tokenValidator = new TokenValidator(null, this._clock);
+		this._clock = new TestableClock();
+		this._tokenValidator = new TokenValidator(null, this._clock);
 
-	this._wss.on('connection', this.handleConnection.bind(this));
-	_log('Listening for connections on port ' + port);
-}
+		this._wss.on('connection', this.handleConnection.bind(this));
+		_log('Listening for connections on port ' + port);
+	}
 
-FirebaseServer.prototype = {
-	handleConnection: function (ws) {
+	handleConnection(ws) {
 		_log('New connection from ' + ws._socket.remoteAddress + ':' + ws._socket.remotePort);
 		var server = this;
 		var authToken = null;
@@ -121,7 +125,7 @@ FirebaseServer.prototype = {
 		}
 
 		function pushData(path, data) {
-			send({d: {a: 'd', b: {p: path, d: data}}, t: 'd'});
+			send({d: {a: 'd', b: {p: path, d: data, t: null}}, t: 'd'});
 		}
 
 		function permissionDenied(requestId) {
@@ -195,6 +199,7 @@ FirebaseServer.prototype = {
 		function handleUpdate(requestId, normalizedPath, fbRef, newData) {
 			var path = normalizedPath.path;
 			_log('Client update ' + path);
+			server.emit('update', path, newData);
 
 			newData = replaceServerTimestamp(newData);
 
@@ -215,6 +220,7 @@ FirebaseServer.prototype = {
 
 		function handleSet(requestId, normalizedPath, fbRef, newData, hash) {
 			_log('Client set ' + normalizedPath.fullPath);
+			server.emit('set', normalizedPath.fullPath, newData);
 
 			var progress = Promise.resolve(true);
 			var path = normalizedPath.path;
@@ -324,47 +330,47 @@ FirebaseServer.prototype = {
 		}.bind(this));
 
 		send({d: {t: 'h', d: {ts: new Date().getTime(), v: '5', h: this.name, s: ''}}, t: 'c'});
-	},
+	}
 
-	setRules: function (rules) {
+	setRules (rules) {
 		this._ruleset = new Ruleset(rules);
-	},
+	}
 
-	getData: function (ref) {
+	getData (ref) {
 		console.warn('FirebaseServer.getData() is deprecated! Please use FirebaseServer.getValue() instead'); // eslint-disable-line no-console
 		var result = null;
 		this.baseRef.once('value', function (snap) {
 			result = snap.val();
 		});
 		return result;
-	},
+	}
 
-	getSnap: function (ref) {
+	getSnap (ref) {
 		return getSnap(ref || this.baseRef);
-	},
+	}
 
-	getValue: function (ref) {
+	getValue (ref) {
 		return this.getSnap(ref).then(function (snap) {
 			return snap.val();
 		});
-	},
+	}
 
-	exportData: function (ref) {
+	exportData (ref) {
 		return exportData(ref || this.baseRef);
-	},
+	}
 
-	close: function (callback) {
+	close (callback) {
 		this._wss.close(callback);
-	},
+	}
 
-	setTime: function (newTime) {
+	setTime (newTime) {
 		this._clock.setTime(newTime);
-	},
+	}
 
-	setAuthSecret: function (newSecret) {
+	setAuthSecret (newSecret) {
 		this._authSecret = newSecret;
 		this._tokenValidator.setSecret(newSecret);
 	}
-};
+}
 
 module.exports = FirebaseServer;

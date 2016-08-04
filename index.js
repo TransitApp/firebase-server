@@ -371,6 +371,10 @@ class FirebaseServer extends EventEmitter {
 		this._authSecret = newSecret;
 		this._tokenValidator.setSecret(newSecret);
 	}
+	
+	database() {
+		return this.app.database();
+	}
 }
 
 module.exports = FirebaseServer;

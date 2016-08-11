@@ -116,7 +116,7 @@ class FirebaseServer extends EventEmitter {
 			var data;
 			if (authToken) {
 				try {
-					data = server._tokenValidator.decode(authToken).d;
+					data = server._tokenValidator.decode(authToken);
 				} catch (e) {
 					authToken = null;
 				}

@@ -199,7 +199,6 @@ class FirebaseServer extends EventEmitter {
 		function handleUpdate(requestId, normalizedPath, fbRef, newData) {
 			var path = normalizedPath.path;
 			_log('Client update ' + path);
-			server.emit('update', path, newData);
 
 			newData = replaceServerTimestamp(newData);
 
@@ -214,13 +213,13 @@ class FirebaseServer extends EventEmitter {
 
 			checkPermission.then(function () {
 				fbRef.update(newData);
+				server.emit('update', path, newData);
 				send({d: {r: requestId, b: {s: 'ok', d: {}}}, t: 'd'});
 			}).catch(_log);
 		}
 
 		function handleSet(requestId, normalizedPath, fbRef, newData, hash) {
 			_log('Client set ' + normalizedPath.fullPath);
-			server.emit('set', normalizedPath.fullPath, newData);
 
 			var progress = Promise.resolve(true);
 			var path = normalizedPath.path;
@@ -260,6 +259,7 @@ class FirebaseServer extends EventEmitter {
 
 			progress.then(function () {
 				fbRef.set(newData);
+				server.emit('set', normalizedPath.fullPath, newData);
 				fbRef.once('value', function (snap) {
 					pushData(path, snap.exportVal());
 					send({d: {r: requestId, b: {s: 'ok', d: {}}}, t: 'd'});

@@ -17,12 +17,15 @@ var Promise = require('any-promise');
 var firebase = require('firebase');
 var _log = require('debug')('firebase-server');
 const EventEmitter = require('events');
+var request = require('request');
 
 // In order to produce new Firebase clients that do not conflict with existing
 // instances of the Firebase client, each one must have a unique name.
 // We use this incrementing number to ensure that each Firebase App name we
 // create is unique.
 var serverID = 0;
+
+var publicKeyRefreshInterval = 1000 * 60;
 
 function getSnap(ref) {
 	return new Promise(function (resolve) {
@@ -91,10 +94,36 @@ class FirebaseServer extends EventEmitter {
 		});
 
 		this._clock = new TestableClock();
-		this._tokenValidator = new TokenValidator(null, this._clock);
 
-		this._wss.on('connection', this.handleConnection.bind(this));
-		_log('Listening for connections on port ' + port);
+		this.createTokenValidators.bind(this)(function() {
+			this._wss.on('connection', this.handleConnection.bind(this));
+			_log('Listening for connections on port ' + port);
+		});
+	}
+
+	createTokenValidators(callback) {
+		var url = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+		var publicKeys = [];
+		var validators = {};
+		var clock = this.clock;
+		var _this = this;
+
+		_log('Getting new public keys from Google');
+		request(url, function(err, resp, body) {
+			publicKeys = JSON.parse(body);
+
+			_.each(publicKeys, function(value, key) {
+				validators[key] = new TokenValidator(value, clock);
+			});
+
+			_this._tokenValidators = validators;
+
+			setTimeout(_this.createTokenValidators.bind(_this), publicKeyRefreshInterval);
+
+			if (callback) {
+				return callback.bind(_this)();
+			}
+		});
 	}
 
 	handleConnection(ws) {
@@ -112,16 +141,12 @@ class FirebaseServer extends EventEmitter {
 			}
 		}
 
-		function authData() {
-			var data;
-			if (authToken) {
-				try {
-					data = server._tokenValidator.decode(authToken);
-				} catch (e) {
-					authToken = null;
-				}
+		function authData(decodedToken) {
+			if (decodedToken) {
+				authToken = decodedToken;
+			} else {
+				return authToken;
 			}
-			return data;
 		}
 
 		function pushData(path, data) {
@@ -268,13 +293,30 @@ class FirebaseServer extends EventEmitter {
 		}
 
 		function handleAuth(requestId, credential) {
+			// Utility functions
+			function base64urlDecode(str) {
+			  return new Buffer(base64urlUnescape(str), 'base64').toString();
+			}
+
+			function base64urlUnescape(str) {
+			  str += new Array(5 - str.length % 4).join('=');
+			  return str.replace(/\-/g, '+').replace(/_/g, '/');
+			}
+
 			if (server._authSecret === credential) {
 				return send({t: 'd', d: {r: requestId, b: {s: 'ok', d: TokenValidator.normalize({ auth: null, admin: true, exp: null }) }}});
 			}
 
 			try {
-				var decoded = server._tokenValidator.decode(credential);
-				authToken = credential;
+				// Get the header segment from the credentials
+				// Get the 'kid' from the header and choose the correct token validator
+				var headerSeg = credential.split('.')[0],
+						header = JSON.parse(base64urlDecode(headerSeg)),
+						tokenValidator = server._tokenValidators[header.kid];
+
+				var decoded = tokenValidator.decode(credential);
+				authData(decoded); // Store the decoded credential
+
 				send({t: 'd', d: {r: requestId, b: {s: 'ok', d: TokenValidator.normalize(decoded)}}});
 			} catch (e) {
 				send({t: 'd', d: {r: requestId, b: {s: 'invalid_token', d: 'Could not parse auth token.'}}});
@@ -369,7 +411,8 @@ class FirebaseServer extends EventEmitter {
 
 	setAuthSecret (newSecret) {
 		this._authSecret = newSecret;
-		this._tokenValidator.setSecret(newSecret);
+		// We're not using auth secrets anymore
+		// this._tokenValidator.setSecret(newSecret);
 	}
 	
 	database() {

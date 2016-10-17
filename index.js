@@ -15,7 +15,7 @@ var TestableClock = require('./lib/testable-clock');
 var TokenValidator = require('./lib/token-validator');
 var Promise = require('any-promise');
 var firebase = require('firebase');
-var _log = require('debug')('firebase-server');
+var _log = require('debug')('firebase-server-' + process.pid);
 const EventEmitter = require('events');
 var request = require('request');
 
@@ -55,11 +55,12 @@ function normalizePath(fullPath) {
 }
 
 class FirebaseServer extends EventEmitter {
-	constructor(port, name, data) {
+	constructor(port, name, data, isMaster) {
 		super();
 		this.name = name || 'mock.firebase.server';
 		this.port = port;
 		this.data = data;
+		this.isMaster = isMaster || true;
 
 		// Firebase is more than just a "database" now; the "realtime database" is
 		// just one of many services provided by a Firebase "App" container.
@@ -71,23 +72,33 @@ class FirebaseServer extends EventEmitter {
 		// talking "through" our server. So to prevent that from happening, we are
 		// choosing a probably-unique name that a developer would not choose for
 		// their "real" Firebase client instances.
-		var appName = 'firebase-server-internal-' + this.name + '-' + serverID++;
+		var appName = 'firebase-server-internal-' + this.name + '-' + process.pid + '-' + serverID++;
+		var config;
 
-		// We must pass a "valid looking" configuration to initializeApp for its
-		// internal checks to pass.
-		var config = {
-			databaseURL: 'ws://fakeserver.firebaseio.test',
-			serviceAccount: {
-				'private_key': 'fake',
-				'client_email': 'fake'
-			}
-		};
-		this.app = firebase.initializeApp(config, appName);
-		this.app.database().goOffline();
+		if (isMaster) {
+			// We must pass a "valid looking" configuration to initializeApp for its
+			// internal checks to pass.
+			config = {
+				databaseURL: 'ws://fakeserver.firebaseio.test',
+				serviceAccount: {
+					'private_key': 'fake',
+					'client_email': 'fake'
+				}
+			};
+			this.app = firebase.initializeApp(config, appName);
+			this.app.database().goOffline();
+		} else {
+			config = {
+				databaseURL: 'ws://localhost.firebaseio.test:' + process.env.masterPort
+			};
+			this.app = firebase.initializeApp(config, appName);
+		}
 
 		this.baseRef = this.app.database().ref();
 
-		this.baseRef.set(data || null);
+		if (isMaster) {
+			this.baseRef.set(data || null);
+		}
 
 		this._wss = new WebSocketServer({
 			port: port
@@ -97,7 +108,8 @@ class FirebaseServer extends EventEmitter {
 
 		this.createTokenValidators.bind(this)(function() {
 			this._wss.on('connection', this.handleConnection.bind(this));
-			_log('Listening for connections on port ' + port);
+			var status = isMaster ? 'master' : 'worker';
+			_log(`${status} listening for connections on port ${port}`);
 		});
 	}
 

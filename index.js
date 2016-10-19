@@ -18,6 +18,7 @@ var firebase = require('firebase');
 var _log = require('debug')('firebase-server-' + process.pid);
 const EventEmitter = require('events');
 var request = require('request');
+var cluster = require('cluster');
 
 // In order to produce new Firebase clients that do not conflict with existing
 // instances of the Firebase client, each one must have a unique name.
@@ -55,12 +56,13 @@ function normalizePath(fullPath) {
 }
 
 class FirebaseServer extends EventEmitter {
-	constructor(port, name, data, isMaster) {
+	constructor(port, name, data, isMaster, masterStats) {
 		super();
 		this.name = name || 'mock.firebase.server';
 		this.port = port;
 		this.data = data;
 		this.isMaster = isMaster || true;
+		this.masterStats = masterStats;
 
 		// Firebase is more than just a "database" now; the "realtime database" is
 		// just one of many services provided by a Firebase "App" container.
@@ -353,6 +355,13 @@ class FirebaseServer extends EventEmitter {
 		}
 
 		ws.on('message', function (data) {
+			if (cluster.isWorker) {
+				_log('Sending');
+				process.send({pid: process.pid});
+			} else {
+				this.masterStats();
+			}
+
 			_log('Client message: ' + data);
 			if (data === 0) {
 				return;
